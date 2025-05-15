@@ -1,0 +1,379 @@
+---
+title: "Clase 4 -  Geoestadística"
+output: html_notebook
+---
+
+Objetivo de la práctica. Introducir los conceptos básicos de geoestadística utilizando el conjunto de datos de “Meuse”.
+
+Esta práctica se basa en el documento: “An introduction to geostatistics with R/gstat” de D G Rossiter, Cornell University, School of Integrative Plant Science, Crop and Soil Sciences Section. June, 2018 y la aplicación práctica de "Geoestadística con R. Parte 1. Conceptos básicos" de Daniela Ballari.
+
+
+### Cargar Librerías
+
+```{r}
+if (!require('pacman'))
+  install.packages("pacman")
+library(pacman)
+#Install Java for your system type
+pacman::p_load(
+  rgdal, #Geospatial Data Abstraction Library o GDAL
+  terra, # Lectura, escritura, procesamiento de datos raster 
+  sp,
+  gstat,
+  mapview,
+  leaflet,
+  sf, # Lectura, escritura, procesamiento de datos vectoriales 
+  raster,# Predecesor de Terra, lectura, escritura, procesamiento de datos raster 
+  tidyverse, # Conjunto de paquetes para manipulación abreviada y flujo de procesos
+  readxl # Lectura de archivos excel
+  
+)
+```
+
+### Cargar datos Meuse
+
+Utilizaremos el conjunto de datos “Meuse” de polución del suelo con muestras de concentración de metales pesados (paquete sp). Meuse está previamente cargado en R, de modo que solo lo llamamos con data()
+
+```{r}
+data(meuse)
+str(meuse) #estructura de datos meuse. Algunas variables son continuas y otras categóricas (factors)
+```
+### C-Exploración de atributos - Analisis EDA (Exploratory Data Analysis)
+
+```{r}
+meuse$zinc
+
+```
+Ordenamos según magnitud de la variable ZINC
+ 
+```{r}
+sort(meuse$zinc)
+
+```
+
+ Ploteamos el histograma para verificar la distribución de los datos. Como se puede observar la distribución es no simétrica, sesgada hacia la derecha
+```{r}
+hist(meuse$zinc, breaks = 16) #Distribución no simétrica, sesgada hacia la derecha
+
+```
+
+```{r}
+summary(meuse$zinc) # media mayor a la mediana (sesgada hacia la derecha, distribución no-normal)
+
+```
+
+```{r}
+#Al ser una distribución no simétrica, se aplica logaritmo para transformar
+#los valores y obtener una distribución simetrica (normal). 
+#Esto, además, reduce los posibles outliers.
+meuse$logZn <- log10(meuse$zinc)
+hist(meuse$logZn, breaks = 16)
+
+```
+
+ Observamos los valores del vector
+ 
+```{r}
+summary(meuse$logZn)
+
+```
+
+
+```{r}
+
+head(meuse$zinc)
+
+```
+
+```{r}
+head(meuse$logZn)
+
+```
+```{r}
+#Luego para transformar a los valores originales se utiliza antilog. antilog (x)=10^x
+head(10^(meuse$logZn)) 
+
+```
+### Estructura espacial local: autocorrelación
+
+```{r}
+#Crear Spatial Data Frame
+coordinates(meuse) <- c("x", "y")
+class(meuse)
+```
+```{r}
+str(meuse) #Slot @proj4string no tiene asignado el sistema de referencia.
+
+```
+```{r}
+#Visualizar datos. Los puntos no están regularmente distribuidos, 
+#sino que son mas densos en la cercanía del río.
+plot(meuse, asp = 1, pch = 1) #asp=1 las dos escalas son iguales
+#cargar otro conjunto de datos llamado meuse.riv que contiene lineas de las márgenes del río.
+data(meuse.riv)
+lines(meuse.riv)
+```
+```{r}
+#Otra visualización con símbolos proporcionales
+plot(meuse, asp = 1, cex = 4 * meuse$zinc/max(meuse$zinc),pch = 1) 
+#cex tamaño de circulos proporcionales al valor
+lines(meuse.riv)
+```
+Visualizamos de manera dinámica
+```{r}
+mapview(meuse['zinc'])
+```
+
+La dependencia espacial local significa que cuanto mas cerca estén los puntos en el espacio geográfico, mas cerca también lo están en el espacio de atributos. Esto se llama autocorrelación.
+
+Los valores de un atributo pueden estar correlacionados con si mismos, y la fuerza de esta correlación depende de la distancia de separación entre puntos.
+
+Cada par de puntos, estará separado por una distancia en el espacio geográfico y una semivarianza en el espacio de atributos.
+
+```{r}
+#Calcule cuántos pares de puntos hay en el dataset meuse.
+n <- length(meuse$logZn)
+n * (n - 1)/2
+```
+
+```{r}
+#calcule la distancia y semivarianza entre los dos puntos primeros puntos del dataset
+coordinates(meuse)[1, ]#punto 1
+```
+
+```{r}
+coordinates(meuse)[2, ]#punto 2
+
+```
+
+```{r}
+sep <- dist(coordinates(meuse)[1:2, ])
+sep #distancia
+```
+```{r}
+gamma <- 0.5 * (meuse$logZn[1] - meuse$logZn[2])^2 # semivarianza, unidades log(mg kg-1)^2
+
+```
+
+### VARIOGRAMA EMPÍRICO O EXPERIMENTAL
+
+¿Cómo la semivarianza y distancia se relacionan en toda el área de estudio? Es a través del Variograma empírico o experimental. Se define como la semivarianza media dividida para un rango de separación determinado.
+
+Graficar el variograma experimental de las concentraciones de Zinc (log). Es decir la media de las semivarianzas, respecto de la distancia media (bin o lag). En este caso de 90m, hasta una distancia máxima (cutoff) de 1300m.
+
+```{r}
+ve <- variogram(logZn ~ 1, meuse, cutoff = 1300,width = 90)
+
+```
+
+variogram: genera la nube de variograma. logZn ~ 1: logZn es dependiente de si misma –> autocorrelación.
+
+Por defecto (si no se especifica cutoff y with) el cutoff es 1/3 de la máxima distancia (diagonal del bbox). Esto es dividido en 15 clases igualmente espaciadas.
+
+¿Cuál es la evidencia de dependencia espacial local? np=número de pares de puntos para cada una de las 15 clases, dist=distancia media, gamma=semivarianza media. A medida que la distancia aumenta, también lo hace la semivarianza, pero hasta una distancia determinada donde la semivarianza se estabiliza.
+
+```{r}
+ve 
+
+```
+
+```{r}
+plot(ve, plot.numbers = T, asp=1)
+
+```
+### MODELO DE VARIOGRAMA O VARIOGRAMA TEÓRICO
+
+Función que ajusta el variograma teórico. Hay diferentes tipos de funciones que pueden ser útiles:
+
+```{r}
+show.vgms()
+
+```
+### Métodos para seleccionar el modelo que mejor ajusta al variograma teórico.
+
+1- Conocer el proceso espacial que gobierna a la variable
+
+2- Ajuste visual
+
+3- Ajuste automático y comparar la bondad del ajuste
+
+#### Ajuste visual
+
+Range o rango: separación o distancia entre pares de puntos en la cual ya no hay dependencia espacial. aprox 850m
+
+Nugget o pepita: semivarianza a la separación de 0m. aprox 0.01
+
+Total-sill o meseta: semivarianza a la distancia del rango. aprox 0.13
+
+Partial-sill o meseta parcial: total sill - nugget. aprox 0.12
+
+vgm genera el modelo de variograma
+```{r}
+vt <- vgm(psill = 0.12, model = "Sph", range = 850,nugget = 0.01) 
+vt
+```
+```{r}
+plot(ve, pl = T, model = vt)
+```
+
+
+#### Ajuste automático
+
+fit.variogram: ajuta el modelo de variograma a un variograma empírico.
+
+```{r}
+va <- fit.variogram(ve, vt) 
+va
+```
+
+
+```{r}
+plot(ve, pl = T, model = va)
+
+```
+
+### Interpolación
+
+#### Kriging ordinario
+
+Usualmente kriging se utiliza para predecir los píxeles (o nodos) de una malla regular que cubre la zona de estudio. kriging ordinario “ordinary” significa que (1) la variable es modelada a partir de si misma; (2) la media espacial no es conocida a priori, sino estimada de los datos.
+
+```{r}
+data(meuse.grid) #malla de 40m x 40m, disponible con el dataset meuse.
+coordinates(meuse.grid) <- c("x", "y")
+gridded(meuse.grid) <- T #indica que el conjunto de datos es un raster
+```
+
+### Predicción
+
+```{r}
+ok <- krige(logZn ~ 1, locations = meuse, newdata = meuse.grid, model = va) 
+
+```
+```{r}
+ok$pred <- 10^(ok$var1.pred)#volver a valores originales
+str(ok)
+```
+#### Visualización
+
+```{r}
+par(mfrow=c(2,1))
+pts.s <- list("sp.points", meuse, col="white",pch=1, cex=4*meuse$zinc/max(meuse$zinc))
+print(spplot(ok, "var1.pred", asp=1, col.regions=rev(heat.colors(50)),
+             main="Predicción OK, log-ppm Zn",sp.layout = list(pts.s)), 
+             split=c(1,1,2,1), more=TRUE)
+pts.s <- list("sp.points", meuse, col="black", pch=20)
+print(spplot(ok, zcol="var1.var",col.regions=rev(gray(seq(0,1,.01))), asp=1,
+             main="Varianza OK, log-ppm Zn^2",sp.layout = list(pts.s)), 
+             split=c(2,1,2,1), more=FALSE)
+```
+### Otros métodos de interpolación no-geoestadísticos
+
+Polígonos de Thiessen: 1. Cambios abruptos de bordes. 2. Solo utiliza un punto para cada predicción.
+
+Inverso de la distancia: 1. No hay una manera objetiva de seleccionar el peso (inverso o inveso cuadrado…). 2. No hay una manera objetiva de seleccionar el radio de interpolación. En todos los casos, la distribución no regular puede sobre-enfatizar áreas (o lo contrario). La varianza debe ser estimada a partir de un conjunto de datos de validación, especificamente reservado para ello.
+
+Poligonos de Thiessen
+
+```{r}
+thiessen = krige(log10(zinc) ~ 1, meuse, meuse.grid, nmax = 1)
+
+```
+
+```{r}
+pts.s <- list("sp.points", meuse, col="white",pch=20)
+spplot(thiessen, "var1.pred", asp=1, col.regions=rev(heat.colors(50)),
+       sp.layout = list(pts.s),main="Thiessen")
+```
+Inverso de la distancia (idw)
+
+```{r}
+idw = idw(log10(zinc) ~ 1, meuse, meuse.grid)
+
+```
+
+```{r}
+spplot(idw, "var1.pred", asp=1, col.regions=rev(heat.colors(50)),
+       sp.layout = list(pts.s),main="IDW")
+```
+
+```{r}
+#Cambiando el número de vecinos
+idw$vecino<- krige(log10(zinc) ~ 1, meuse, meuse.grid,nmax=6)
+```
+
+```{r}
+# Cambiando pesos
+idw$idp05 = idw(log10(zinc) ~ 1, meuse, meuse.grid, idp = 0.5)$var1.pred
+```
+
+```{r}
+idw$idp5 = idw(log10(zinc) ~ 1, meuse, meuse.grid, idp = 5)$var1.pred
+
+```
+
+```{r}
+idw$idp10 = idw(log10(zinc) ~ 1, meuse, meuse.grid, idp = 10)$var1.pred
+
+```
+
+
+```{r}
+spplot(idw, c("var1.pred","idp05", "idp5", "idp10"),  col.regions=rev(heat.colors(50))
+       ,main="IDW")
+```
+### Validación cruzada
+
+
+```{r}
+thiessen.cv.a <- krige.cv(log10(zinc) ~ 1, meuse,nmax = 1)
+idw.cv.a <- krige.cv(log10(zinc) ~ 1, meuse)
+ok.cv.a <- krige.cv(log10(zinc) ~ 1, locations = meuse, model = va)
+```
+
+```{r}
+thiessen.cv.a[1:5,]
+
+```
+```{r}
+idw.cv.a[1:5,]
+
+```
+
+
+```{r}
+ok.cv.a[1:5,]
+
+```
+
+```{r}
+#correlación
+par(mfrow=c(1,3))
+print(plot(var1.pred~observed,thiessen.cv.a, main="Thiessen"), split=c(1,1,3,1), more=TRUE)
+```
+```{r}
+print(plot(var1.pred~observed,idw.cv.a, main="IDW"), split=c(2,1,3,1), more=TRUE)
+
+```
+
+```{r}
+print(plot(var1.pred~observed,ok.cv.a, main="OK"), split=c(3,1,2,1), more=FALSE)
+
+```
+
+```{r}
+cor(thiessen.cv.a$var1.pred,thiessen.cv.a$observed)
+
+```
+
+
+```{r}
+cor(idw.cv.a$var1.pred,idw.cv.a$observed)
+
+```
+
+```{r}
+cor(ok.cv.a$var1.pred,ok.cv.a$observed)
+
+```
+
